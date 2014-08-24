@@ -1,0 +1,468 @@
+
+%% PREAMBLE, Parallel
+matlabpool 
+
+%% PREAMBLE, Paths
+cd ~/sandbox/forceproj/omri/fixed_points/matlab
+addpath('~/sandbox/worlddomination_forceproj/trunk/howitworks/matlab/');
+addpath('~/sandbox/worlddomination_forceproj/trunk/hfopt/matlab/');
+
+
+
+rng('shuffle');  % seed the random generator based on the current time
+seedStruct = rng;  % returns the current settings of the RNG
+
+%%  Load Model
+
+%load_path = '/Users/sussillo/Dropbox/sandbox/forceproj/omri/fixed_points/networks/';
+%net_name = 'hfopt_sine_gen_paper_186_0.010138_Inf.mat';
+
+load_path = '../../data/networks/hfopt/sinegen_1x_postpub/sine_gen_g1.5_a1/';
+net_name = 'hfopt_sine_gen_40_0.0071863_Inf.mat';
+
+image_folder_name = '~/Dropbox/sandbox/forceproj/omri/fixed_points/images/';
+package = load([load_path net_name]);
+
+net = package.net;
+stats = package.stats;
+simparams = package.simparams;
+
+[n_Wru_v, n_Wrr_n, m_Wzr_n, n_x0_c, n_br_1, m_bz_1] = unpackRNN(net, net.theta);
+
+[N,I] = size(n_Wru_v);
+B = size(m_Wzr_n,1);    
+
+inv_trans_fun = net.layers(2).invTransFun;
+
+weight_cost = 0.0;
+eval_network_rnn = create_eval_network_rnn(weight_cost);
+eval_objfun_rnn = create_eval_objfun_rnn(weight_cost);
+eval_gradient_rnn = create_eval_gradient_rnn(weight_cost);
+eval_cg_afun_rnn = create_eval_cg_afun_rnn(weight_cost);
+eval_preconditioner_rnn = [];
+
+eval_network = create_eval_network(eval_network_rnn, weight_cost);
+eval_objfun = create_eval_objfun(eval_objfun_rnn, weight_cost);
+eval_gradient = create_eval_gradient(eval_gradient_rnn, weight_cost);
+eval_cg_afun = create_eval_cg_afun(eval_cg_afun_rnn, weight_cost);
+eval_preconditioner = [];
+
+
+%%  Load Data
+
+% There are some basic network parameters necessary to know how to make
+% the data.
+dt = 0.1;
+tau = 1.0;
+ntrials = 5; % was 51
+ninputs = 1;
+time = 800;
+times = dt:dt:time;
+ntimes = length(times);
+
+inputs = cell(1,ntrials);
+targets = cell(1,ntrials);
+freq_rads = zeros(1,ntrials);
+burn_length = round(ntimes / 2.0);  
+for i = 1:ntrials
+    
+    freq_rad = 0.05*i/ntrials + 0.1;
+    freq_rads(i) = freq_rad;
+    
+    % Notice no teacher forcing here, so it's only during training!
+    inputs{i} = 0.0 * sin(freq_rad * times) + (i/ntrials +0.25)* ones(1,ntimes);
+    inputs{i}(burn_length+1:end) = (i/ntrials +0.25)* ones(1,burn_length);
+    
+    if simparams.doOneOutput
+        targets{i} = sin(freq_rad * times);        
+    else
+        targets{i} = NaN(ntrials, ntimes);
+        targets{i}(i,:) = sin(freq_rad * times);        
+    end
+    
+end
+targets = fliplr(targets);  % Faster stuff nearer to zero.
+freq_rads_flip = fliplr(freq_rads);
+
+
+%% Network trajectories
+
+TvVT = 1;
+forward_pass = eval_network(net, inputs, targets, TvVT, ntrials, {}, 'doparallel', true);
+
+Rs = {};
+Xs = {};
+RNN_FP_RIDX = 1;
+RNN_FP_XIDX = 5;
+RNN_FP_ZIDX = 3;
+
+for i = 1:ntrials
+    Rs{i} = forward_pass{i}{RNN_FP_RIDX};    
+    Xs{i} = forward_pass{i}{RNN_FP_XIDX};
+    Zs{i} = forward_pass{i}{RNN_FP_ZIDX};
+end
+R = [Rs{:}];    
+X = [Xs{:}];
+Z = [Zs{:}];
+
+%% Check that things look OK.
+
+figure;
+for i=1:ntrials; plot(Zs{i}); axis tight; pause(0.1); end
+
+
+%% PCA Calculation
+meanR = mean(R,2);
+Rz = bsxfun(@minus, R, meanR);
+Cr = (Rz*Rz')/size(Rz,2);
+[V,Dr] = eig(Cr);
+dr = diag(Dr);
+[dr, sidxs_r] = sort(dr, 'descend');
+dr(dr < eps) = eps;
+
+Rpca.C = Cr;			% it's sorted, motherfucker!
+Rpca.V = V(:,sidxs_r);
+Rpca.d = dr;
+Rpca.sortIdxs = 1:N;
+Rpca.mean = meanR;
+
+
+meanX = mean(X,2);
+Xz = bsxfun(@minus, X, meanX);
+Cx = (Xz*Xz')/size(Xz,2);
+[V,Dx] = eig(Cx);
+dx = diag(Dx);
+[dx, sidxs_u] = sort(dx, 'descend');
+dx(dx < eps) = eps;
+
+Xpca.C = Cx;			% it's sorted, motherfucker!
+Xpca.V = V(:,sidxs_u);
+Xpca.d = dx;
+Xpca.sortIdxs = 1:N;
+Xpca.mean = meanX;
+
+
+line_width = 2;
+font_size = 18;
+eigs_to_show = 30;
+plot(1:eigs_to_show, log10(Xpca.d(1:eigs_to_show)), '-kx', 'linewidth', line_width);
+hold on;
+plot(1:eigs_to_show, log10(Rpca.d(1:eigs_to_show)), '-rx', 'linewidth', line_width);
+axis tight;
+xlabel('\lambda #', 'fontsize', font_size);
+ylabel('log10(\lambda)', 'fontsize', font_size);
+legend('X eigenvalues', 'R eigenvalues');
+set(gca(gcf), 'fontsize', font_size);
+
+%ds = 10;
+%P = downsample((Xpca.U'*Xz')', ds)';
+%Q = downsample((Rpca.V'*Rz')', ds)';
+
+frac_cumsum_x = cumsum(Xpca.d) / sum(Xpca.d);
+frac_cumsum_r = cumsum(Rpca.d) / sum(Rpca.d);
+
+
+
+var_explained = 0.999
+thing = find(frac_cumsum_x > var_explained);
+pc_num_var_explained_x = thing(1)
+thing = find(frac_cumsum_r > var_explained);
+pc_num_var_explained_r = thing(1)
+
+
+
+
+%% FP FINDING
+
+nstable_fps = 10 % two per line attractor are expected
+myeps = 0.0001;
+max_eps = 0.01;
+eps_factor = 2.0;
+tolfun = 1e-16;%
+tolx = 1e-16;				% 1e-6 is default value
+%fval_tol = 2.0e-11;  % for first good one of movie
+fval_tol = 2.0e-10;
+
+
+for i = 1:ntrials 
+    const_input = inputs{i}(end);
+    start_points = Xs{i}(:,round(end/2):end);
+    [fp_struct{i}, sfpmd{i}] = find_many_fixed(net, nstable_fps, start_points, myeps, max_eps, fval_tol, ...
+        'tolfun', tolfun, 'tolx', tolx, 'display', 'off', 'epsfactor', eps_factor, 'constinput', const_input, 'dotopomap', false);
+
+end
+
+for i = 1:ntrials 
+    good_idxs = find([fp_struct{i}.FPNorm] < 1e20);
+    fp_struct{i} = fp_struct{i}(good_idxs);
+end
+
+%% Distance of the trajectories to the Fixed Points
+
+fp_dists = cell(1,ntrials);
+for i = 1:ntrials
+    dist1s = bsxfun(@minus, Xs{i}, fp_struct{i}(1).FP);
+    [~,norms] = normify(dist1s);
+    fp_dists{i} = norms;
+end
+
+figure; 
+colors = jet(ntrials);
+for i = 1:ntrials
+    plot(fp_dists{i}(200:end), 'Color', colors(i,:), 'linewidth', 2); hold on;
+end
+
+ylabel(texlabel('sqrt(sum_t(x_a(t) - x^*_a)^2)'), 'fontsize', 18);
+xlabel('Time', 'fontsize', 18);
+%ylabel(texlabel('sin(sqrt(x^2 + y^2))/sqrt(x^2 + y^2)'))
+
+%% Frequency Analysis
+
+fontsize = 18;
+
+Nmax = 10;
+Nshow = 4;
+good_decay_min = 0.0;
+
+f1 = figure;
+plot(freq_rads, 'xk', 'linewidth', 2);
+hold on;
+f2 = figure;
+for j = 1:ntrials
+    fps = fp_struct{j};
+    for i = 1 %1:length(fps)
+            eig_ia = abs(imag(fps(i).eigenValues(1:Nmax)));
+            eig_r = real(fps(i).eigenValues(1:Nmax));             
+            good_idxs_r = find(eig_r >= good_decay_min);
+            good_idxs_i = find(eig_ia > 0.0);
+            good_idxs = intersect(good_idxs_r, good_idxs_i);
+            eig_ra = abs(eig_r(good_idxs));
+            eig_ia = eig_ia(good_idxs);
+            
+            scale = 80;
+            [scale_sorted, sidxs] = sort(scale, 'descend');
+
+            if isempty(good_idxs)
+                eig_r
+                continue;
+            end
+            figure(f1);
+            tidxs = 1:length(scale);
+            scatter(j*ones(length(tidxs),1), eig_ia(tidxs), scale, [1 0 0], 'filled');
+            hold on;
+            
+            figure(f2);
+            plot(eig_ra(1), eig_ia(1), 'x');
+            plot(eig_ra(2), -eig_ia(2), 'x');
+            hold on;
+    end
+end
+figure(f1);
+axis tight;
+xlabel('Fixed Point #', 'fontsize', fontsize);
+ylabel('Frequency (radians)', 'fontsize', fontsize);
+a = gca(gcf);
+set(a, 'fontsize', fontsize);
+ylim([0 0.7])
+xlim([1 51])
+
+%% Evaluate the quality of the linear approximation.
+ 
+nfps = length(fp_struct);
+ 
+mean_F0_norms = zeros(1,nfps);
+mean_F1dx_norms = zeros(1,nfps);
+mean_F2dx2_norms = zeros(1,nfps);
+ 
+figure;
+for i = 1:nfps
+ 
+    const_input = inputs{i}(:,end);
+    n_xfp_1 = fp_struct{i}(1).FP;
+    
+    dt_o_tau = net.dt / net.tau;
+    n_rfp_1 = net.layers(2).transFun(n_xfp_1);
+    
+    [n_Wru_v, n_Wrr_n, ~, ~, n_bx_1, ~] = unpackRNN(net, net.theta);
+    
+    n_xfp1_1 = (1.0-dt_o_tau)*n_xfp_1 + dt_o_tau*( n_Wrr_n*n_rfp_1 + n_bx_1 ); % n_br0_1 here.
+    if ( ~isempty(const_input) )
+        n_xfp1_1 = n_xfp1_1 + dt_o_tau * n_Wru_v * const_input;
+    end
+    
+    N = net.layers(2).nPost;
+    
+    n_dxfp_1 = -n_xfp_1 + n_Wrr_n*n_rfp_1 + n_bx_1 + n_Wru_v * const_input;
+    
+    n_dr_1 = net.layers(2).derivFunAct(n_rfp_1);
+    nr_dr_n = ones(N,1)*n_dr_1';        % r for redundant dimension, so duplicate in rows
+    n_dr2_1 = -2*n_rfp_1.*n_dr_1;
+    
+    
+    
+    assert ( false, 'Is this Xs{1} correct?  Shouldn''t it go with i?');  % XXX DCS - Sept 24. 2012
+    dxs = bsxfun(@minus, Xs{1}, n_xfp_1);
+    F0_norms = norm(n_dxfp_1) * ones(1,size(dxs,2));      
+    F1dx_norms = zeros(1,size(dxs,2));
+    F2dx2_norms = zeros(1,size(dxs,2));
+    for j = 1:size(dxs,2)
+        dx = dxs(:,j);
+        F1dx = (-eye(N) + n_Wrr_n .* nr_dr_n) * dx;
+        F1dx_norms(j) = norm(F1dx);
+        assert ( false, 'This n_dr_1 should go away.');
+        dxF2dx = 0.5 * n_Wrr_n * (n_dr_1 .* n_dr2_1 .* dx .* dx);
+        F2dx2_norms(j) = norm(dxF2dx);
+    end
+    
+    startidx = 400;
+    mean_F0_norms(i) = mean(F0_norms(startidx:end));
+    mean_F1dx_norms(i) = mean(F1dx_norms(startidx:end));
+    mean_F2dx2_norms(i) = mean(F2dx2_norms(startidx:end));
+ 
+    
+end
+close all;
+figure;
+plot(1:nfps, mean_F0_norms, '-xk');
+hold on;
+plot(1:nfps, mean_F1dx_norms, '-xb');
+plot(1:nfps, mean_F2dx2_norms, '-xr');
+legend('|F(x*)|', '|F''(x*)\delta x|', '0.5| \delta xF''''(x*)\delta x|', 'Location', 'Northwest');
+xlabel('Fixed Point #', 'fontsize', 18)
+ylabel('Taylor Series Values', 'fontsize', 18);
+set(gca, 'fontsize', 18);
+
+%% Plot the eigenvalues of the linearized systems
+
+close all;
+for i = 1:ntrials
+    figure; 
+    evs = fp_struct{i}.eigenValues;
+    plot(evs, 'rx', 'linewidth', 2);
+    ylim([-1 1])
+    xlim([-1.2 0.2]);
+end
+    
+    
+
+
+%% Hand Taylored Projection (mine)
+
+% What is an orthogonal network representation?   It means that none of the
+% relavant or irrelevant inputs our output is lost.  It's all in the space,
+% and that the directions of the different values are 90 separated from
+% each other.
+
+close all;
+
+do_plot_netact = 1;
+do_plot_ics = 0;
+do_plot_raxis = 1;
+do_plot_fps = 1;
+do_plot_eigs = 1;
+
+pcidxs = [1 2 3];
+Vrshow = [ Xpca.V(:,pcidxs) ];
+rvec_colors = [0 0 0; 0 0 0; 0 0 0];
+rvec_text = ['PC1'; 'PC2'; 'PC3']; 
+
+Vno = [Xpca.V(:,pcidxs)];
+V = orth(Vno);
+projMean = zeros(N,1);
+
+line_width = 1.0;
+line_width2 = 1.0;
+    
+ntrialstoplot = ntrials;
+ds = 10;
+
+dc = [0 0 1];
+oc = [0 1 0];  % Output color
+
+f = figure;
+
+dims = [1 2 3];
+if ( do_plot_raxis )
+    pscale = 4*[1 1 1];
+    vec_zero = [10 5 0]';
+    %vec_zero = V'*sfpc_struct(2).FP;
+    nshowvecs = size(Vrshow,2);
+    vecs = repmat(pscale, nshowvecs, 1) .* (V'*(bsxfun(@minus, Vrshow, projMean)));        
+    vecs = vecs + repmat(vec_zero, 1, nshowvecs);        
+    for i = dims
+        plot3([ vec_zero(1) vecs(1,i)],[vec_zero(2) vecs(2,i)],[vec_zero(3) vecs(3,i)], 'Color', rvec_colors(i,:), 'linewidth', 3)
+        hold on;
+        text(vecs(1,i), vecs(2,i), vecs(3,i), rvec_text(i,:), 'fontsize', 18);
+    end        
+    hold on;
+end
+
+
+if ( do_plot_netact )
+    for i = 1:ntrialstoplot
+        start_idx = 200;
+        stop_idx = 1000;
+        x = downsample(Xs{i}(:,start_idx:stop_idx)', ds)';
+        proj = V'*bsxfun(@minus,x,projMean);
+        
+        plot3(proj(dims(1),:),proj(dims(2),:), proj(dims(3),:), 'color', dc, 'linewidth', line_width2)       
+        %plot3(proj(dims(1),end),proj(dims(2),end), proj(dims(3),end), 'x', 'color', dc, 'linewidth', line_width2)
+      
+        hold on;
+    end
+end
+
+
+if ( do_plot_fps )
+    fp_color = [0 1 0];
+    slow_mode_color = [1 0 0];
+    for j = 1:ntrials
+        fps = fp_struct{j};
+        for i = 1 %:length(fps)
+            if isnan(fps(i).FPNorm)
+                continue;
+            end
+            fp_proj = V'*((fps(i).FP)-projMean);
+            plot3(fp_proj(dims(1)),fp_proj(dims(2)),fp_proj(dims(3)), '.', 'linewidth', 3, 'color', fp_color, 'markersize', 8)
+            hold on;
+            
+            if ~do_plot_eigs
+                continue;
+            end
+            nevs = 2;     
+            kidx = 1;
+            k = 0;
+            while kidx < 3
+                k = k+1;
+                if k > length(fps)
+                    break;
+                end
+                if isreal(fps(i).eigenValues(k))                    
+                    continue;
+                end
+                if mod(kidx,2) == 0
+                    myfun = @real;
+                else
+                    myfun = @imag;
+                end
+                ev_proj =  V'*(myfun(fps(i).eigenVectors(:,k))+fps(i).FP-projMean);
+                plot3([fp_proj(dims(1)) ev_proj(dims(1))],[fp_proj(dims(2)) ev_proj(dims(2))],[fp_proj(dims(3)) ev_proj(dims(3))], 'Color', slow_mode_color, 'linewidth', 2)
+                ev_proj =  V'*(myfun(-fps(i).eigenVectors(:,k))+fps(i).FP-projMean);
+                plot3([fp_proj(dims(1)) ev_proj(dims(1))],[fp_proj(dims(2)) ev_proj(dims(2))],[fp_proj(dims(3)) ev_proj(dims(3))], 'Color', slow_mode_color, 'linewidth', 2)            
+                kidx = kidx+1;
+            end
+%             x = downsample(X_fpmn{i}', ds)';
+%             proj = V'*bsxfun(@minus,x,projMean);
+%             plot3(proj(dims(1),:),proj(dims(2),:), proj(dims(3),:), 'color', [0 0 0], 'linewidth', line_width2)
+%             
+%             x = downsample(X_fpmp{i}', ds)';
+%             proj = V'*bsxfun(@minus,x,projMean);
+%             plot3(proj(dims(1),:),proj(dims(2),:), proj(dims(3),:), 'color', [0 0 0], 'linewidth', line_width2)
+            
+        end 
+    end        
+end
+
+
+axis equal;
+

@@ -1,0 +1,165 @@
+function plot_stats = romosim_statespace_optional_plot_fun(net, simparams, funs, did_objfun_improve_this_iter, f, trial_idxs, forward_pass_T, forward_pass_s, ...				 
+						 v_inputtrain_T, v_inputtrain_s, v_inputtest_t, ...
+						 m_targettrain_T, m_targettrain_s, m_targettest_t, all_optional_args, all_simdata, all_plot_stats)
+
+
+
+                     
+plot_stats = [];
+figure(f);
+subplot(212);
+hold off;
+
+
+[n_Wru_v, n_Wrr_n, m_Wzr_n, n_x0_c, n_br_1, m_bz_1] = unpackRNN(net, net.theta);
+[n_OWru_v, n_OWrr_n, m_OWzr_n, n_Ox0_c, n_Obr_1, m_Obz_1] = unpackRNN(net, net.originalTheta);
+
+
+frob_norm = norm(n_Wrr_n, 'fro');
+disp(['The frobenius norm on the matrix is: ' num2str(frob_norm)]);
+
+D = eig(n_Wrr_n);
+
+
+I = net.layers(1).nPre;
+N = net.layers(2).nPre;
+B = net.layers(3).nPost;
+trans_fun = net.layers(2).transFun;
+inv_trans_fun = net.layers(2).invTransFun;  
+pca_start = 1;
+ms_idx = 1;  % This is just eye-balling not related to the go cue or anything else, so itain't precise!
+win = n_Wru_v;
+
+x0 = n_x0_c; % Should be only one in this case.
+r0 = trans_fun(x0);
+
+
+
+TvV_T = 1;
+package = funs.evalNetwork(net, v_inputtrain_s, m_targettrain_s, TvV_T, trial_idxs, all_optional_args, all_simdata); 
+forward_pass_s = package{1};
+all_simdata = package{end};
+T = size(forward_pass_s{1}{3},2);
+
+
+% TvV_V = 2;
+% [V,t] = size(v_inputtest_t);
+% package = funs.evalNetwork(net, v_inputtest_t, m_targettest_t, TvV_V, 1:t, all_optional_args, all_simdata);
+% forward_pass_v = package{1};
+% all_simdata = package{end};
+
+
+Xact = {};
+netouts = {};
+for i = 1:length(forward_pass_s)
+    Ract{i} = forward_pass_s{i}{1}(:,pca_start:end);
+    Xact{i} = net.layers(2).invTransFun(Ract{i});    
+end
+
+
+X = cell2mat(Xact);
+meanX = mean(X,2);
+Xz = bsxfun(@minus, X, meanX);
+Cx = (Xz*Xz')/size(Xz,1);
+[V,Dx] = eig(Cx);
+dx = diag(Dx);
+[dx, sidxs_u] = sort(dx, 'descend');
+dx(dx < eps) = eps;
+
+Xpca.C = Cx;			% it's sorted, motherfucker!
+Xpca.V = V(:,sidxs_u);
+Xpca.d = dx;
+Xpca.sortIdxs = 1:N;
+Xpca.mean = meanX;
+
+
+ntrials = length(forward_pass_s);
+
+do_plot_netact = 1;
+do_plot_axis = 1;
+
+plot_scale = 1.0;
+
+
+
+V = Xpca.V(:,1:3);
+projMean = Xpca.mean;
+Vshow = V;
+
+
+netact = Xact;   % Might want Ract;
+dims = [1 2 3];
+ds = 10;
+
+in_vecs_normed = zeros(N,I);
+for i = 1:I
+    in_vecs_normed(:,i) = win(:,i)/norm(win(:,i));
+end
+
+subplot 223;
+r0_proj = V'*((x0)- projMean);
+plot3(r0_proj(dims(1),1),r0_proj(dims(2),1), r0_proj(dims(3),1), 'mx', 'Color', [0.25 0.25 0.25], 'markersize', 20, 'linewidth', 10)
+
+if ( do_plot_netact )
+    for i = 1:ntrials
+        mproj = downsample((V'*bsxfun(@minus, netact{i}, projMean))',ds)';
+        msds_idx = ceil( ms_idx / ds );
+        plot3(mproj(dims(1),msds_idx+1:end),mproj(dims(2),msds_idx+1:end), mproj(dims(3),msds_idx+1:end), 'k')
+        hold on;
+        plot3(mproj(dims(1),end),mproj(dims(2),end), mproj(dims(3),end), 'xk')        
+    end
+end
+
+
+if ( do_plot_axis )
+    
+    pscale = 1*[1 1 1];
+    vec_zero = [-0 0 0]';    
+    vecs = repmat(pscale, 3, 1) .* (V'*(bsxfun(@minus, Vshow, projMean)));        
+    vecs = vecs + repmat(vec_zero, 1, 3);        
+    for i = dims
+        plot3([ vec_zero(1) vecs(1,i)],[vec_zero(2) vecs(2,i)],[vec_zero(3) vecs(3,i)], 'Color', 'r', 'linewidth', 3)
+        hold on;
+    end        
+    hold on;
+end
+
+subplot 224
+plot(D, 'rx', 'linewidth', 2)
+
+
+ntrials = length(forward_pass_s);
+rpidxs = randperm(ntrials);
+idx = 0;
+for i = rpidxs
+    idx = idx+1;
+    if ( idx > 4 )
+        continue;
+    end    
+        
+    %burn_length = net.layers(2).initLength;
+    burn_length = 0; % Plot everything
+    
+    subplot(4,2,idx);
+    plot(v_inputtrain_s{i}(burn_length+1:end)', 'k');
+    hold on;
+    if simparams.doOneOutput
+        plot(m_targettrain_s{i}(burn_length+1:end), 'g');
+        plot(forward_pass_s{i}{3}, 'r');
+    else
+        plot(m_targettrain_s{i}(ntrials-i+1,burn_length+1:end)', 'g');
+        plot(forward_pass_s{i}{3}(ntrials-i+1,:)', 'r');
+    end
+    
+
+    axis tight;
+    ylim([-1.2 1.2]);
+    hold off;
+    
+    if mod(idx,2) == 0
+        subplot(4,2,idx);
+        plot(bsxfun(@plus, forward_pass_s{i}{1}(1:10,:)', 1:10), 'b');
+    end
+end
+
+    
