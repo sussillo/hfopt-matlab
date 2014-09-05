@@ -41,34 +41,10 @@ function varargout = dn_hf_allfun2(net, v_input_s, m_target_s, wc, v, lambda, pr
 nlayers = net.nlayers;
 layers = net.layers;
 
-TvV_T = 1;
-TvV_V = 2;
+% TvV_T = 1;
+% TvV_V = 2;
+% is_learning = ~do_return_L;
 
-is_learning = ~do_return_L;
-
-dop_input = 0.0;
-dop_hidden = 0.0;
-dops = zeros(1,nlayers);
-if isfield(net, 'dropOutPercentageInput') && training_vs_validation == TvV_T && is_learning
-    dop_input = net.dropOutPercentageInput;
-    dops(1) = dop_input;
-end
-if isfield(net, 'dropOutPercentageHidden') && training_vs_validation == TvV_T && is_learning
-    dop_hidden = net.dropOutPercentageHidden;
-    dops(2:end) = dop_hidden;
-end
-if isfield(net, 'dropOutPercentageInput') && ~is_learning
-    dop_input = net.dropOutPercentageInput;
-    Wu{1} = (1-dop_input)*Wu{1};
-    % explicitly ignoring biases, though not sure that's correct
-end
-if isfield(net, 'dropOutPercentageHidden') && ~is_learning
-    dop_hidden = net.dropOutPercentageHidden;
-    for i = 2:nlayers
-        Wu{i} = (1-dop_hidden)*Wu{i};
-        % explicitly ignoring biases, though not sure that's correct
-    end      
-end
 
 npre = zeros(1,nlayers);
 npost = zeros(1,nlayers);
@@ -78,35 +54,23 @@ for i = 1:nlayers
 end
 
 vmask = ~isnan(m_target_s);     % Use logical indexing to allow a single time index with both a value and NaN. DCS:2/15/2012
-ntargets = length(find(vmask));
+%ntargets = length(find(vmask));
 %assert ( ntargets > 0, 'Something wrong here.');
 
 
 %   yp1 cuz first layer isn't saved, so p1 implies counting from input.
 if ( isempty(pregen_forward_pass) )    
-    v_input_perturbed_s = v_input_s;
-    if ( dops(1) > 0.0 )
-        drop_idxs = rand(npre(1),S) < dops(1);  % e.g. less than 20%, ones mean drop.       
-        v_input_perturbed_s(drop_idxs) = 0;  % matrix as array      
-    end     
-    n_yim1_s = v_input_perturbed_s;
+    n_yim1_s = v_input_s;
     n_yi_s = cell(1,nlayers);
-    for i = 1:nlayers			% doesn't include the input, 1 is the first hidden layer       
-        
+    for i = 1:nlayers			% doesn't include the input, 1 is the first hidden layer              
         trans_fun = layers(i).transFun;
-        n_yi_s{i} = trans_fun(Wu{i} * n_yim1_s + repmat(bu{i}, [1 S]));
-        
-        if ( i < nlayers && dops(i+1) > 0.0 )
-            drop_idxs = rand(npost(i),S) < dops(i+1);  % e.g. less than 50%, ones mean drop.
-            n_yi_s{i}(drop_idxs) = 0;	% matrix as an array
-        end
-        
+        n_yi_s{i} = trans_fun(Wu{i} * n_yim1_s + repmat(bu{i}, [1 S]));        
         n_yim1_s = n_yi_s{i};
     end
     
     assert ( ~do_return_L_GaussNewton, 'Something is wrong.');
 else
-    v_input_perturbed_s = pregen_forward_pass{1};
+    v_input_s = pregen_forward_pass{1};
     n_yi_s = cell(1,nlayers);
     for i = 1:nlayers			% doesn't include the input, 1 is the first hidden layer
         n_yi_s{i} = pregen_forward_pass{i+1};
@@ -166,7 +130,7 @@ if do_return_L_grad || do_return_preconditioner %|| (do_return_L_GaussNewton && 
     
     if ( do_return_L_grad )		% now make the gradient of the objective function
         
-        n_yim1_s = v_input_perturbed_s;
+        n_yim1_s = v_input_s;
         n_dEdW_n = cell(1,nlayers);
         n_dEdb_1 = cell(1,nlayers);
         for i = 1:1:nlayers		% no need to go backwards here.
@@ -230,10 +194,12 @@ if do_return_L_grad || do_return_preconditioner %|| (do_return_L_GaussNewton && 
     end
     
     if ( do_return_preconditioner )		% wc, based on Martens' code.
-        
+        assert ( false, 'Need to check correctness.');  % Not being used right now, but algorithms should still work.
         % I'm not sure why we square first and then multiply, instead of multiply first and then square, but I'm
         % following Martens' code as well as possible. -DCS:2011/08/17
-        n_yim1_s = v_input_perturbed_s;
+        n_yim1_s = v_input_s;
+        n_dEdW2_n = cell(1,nlayers);
+        n_dEdb2_1 = cell(1,nlayers);
         for i = 1:1:nlayers		% no need to go backwards here.
             n_dEdxi_sqr_s = n_dEdx_s{i}.^2;
             n_dEdW2_n{i} = (n_dEdxi_sqr_s * (n_yim1_s.^2)'); % xxx not a square, notation don't help
@@ -307,7 +273,7 @@ if ( do_return_L_GaussNewton && ~net.simParams.doTrueHv)
     
     
     % f1: Forward pass for R operation, so called f1 pass in Schraudolph, giving J_F (v)
-    n_yim1_s = v_input_perturbed_s;
+    n_yim1_s = v_input_s;
     n_Ryim1_s = zeros(net.layers(1).nPre,S);			% W * Ry don't count in first layer
     n_hp_s = cell(1,nlayers);
     for i = 1:nlayers			% up to output (linear)
@@ -337,7 +303,7 @@ if ( do_return_L_GaussNewton && ~net.simParams.doTrueHv)
     end
     
     % R gradient, put it all together
-    n_yim1_s = v_input_perturbed_s;
+    n_yim1_s = v_input_s;
     n_VWgrad_n = cell(1,nlayers);
     n_Vbgrad_1 = cell(1,nlayers);
     for i = 1:nlayers
@@ -359,7 +325,7 @@ if ( do_return_L_GaussNewton && ~net.simParams.doTrueHv)
     
     do_check_GV = 0;
     if ( do_check_GV )
-        disp('Explicitly calculating the Gv product.');
+        disp('Explicitly calculating the Gv product.'); %#ok<*UNRCH>
         
         % This code is dependent on matching loss!  It's hard to go up
         % to linear portion only, so for cross entropy, I invert.
@@ -435,7 +401,7 @@ end
 %% Return the outputs
 varargout_pre = {};
 if ( do_return_network )
-    varargout_pre{end+1} = {v_input_perturbed_s n_yi_s{:}}; % may not be practical down the road.
+    varargout_pre{end+1} = {v_input_s n_yi_s{:}}; % may not be practical down the road.
 end
 if ( do_return_L )
     varargout_pre{end+1} = J;

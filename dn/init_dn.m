@@ -23,8 +23,8 @@ rho = [];
 optargin = size(varargin,2);
 for i = 1:2:optargin			% perhaps a params structure might be appropriate here.  Haha.
     switch varargin{i}
-        case 'numconn'
-            numconn = varargin{i+1};
+%         case 'numconn'
+%             numconn = varargin{i+1};
         case 'wcfacbylayer'
             wc_layer_fac = varargin{i+1};
         case 'beta'
@@ -37,25 +37,29 @@ end
 npres = layer_sizes(1:end-1);
 nposts = layer_sizes(2:end);
 net.nlayers = nlayers;
+W = cell(1,nlayers);
+layer = struct;
+layers = repmat(layer, 1, nlayers);
 for i = 1:nlayers
     npre = npres(i);
     npost = nposts(i);
     
-    W{i} = zeros(npost,npre);
-    for j = 1:npost
-        if isinf(numconn)
-            idxs = 1:npre;
-            W{i}(j,idxs) = (2.0*(rand(npre,1)-0.5)) * sqrt(6)/sqrt(npre+npost);
-        else
-            assert( false, 'Eat shit and die.');
-            idxs = ceil(layer_sizes(i)*rand(1,numconn));
-            W{i}(j,idxs) = randn(numconn,1);
-        end
-        n = norm(W{i}(j,:));
-        W{i}(j,idxs) = W{i}(j,idxs) * g(i);
-    end
+    W{i} = g(i) * randn(npost,npre)/sqrt(npre);
     
-    
+%     for j = 1:npost
+%         if isinf(numconn)
+%             idxs = 1:npre;
+%             W{i}(j,idxs) = (2.0*(rand(npre,1)-0.5)) * sqrt(6)/sqrt(npre+npost);
+%         else
+%             assert( false, 'Eat shit and die.');
+%             idxs = ceil(layer_sizes(i)*rand(1,numconn));
+%             W{i}(j,idxs) = randn(numconn,1);
+%         end
+%         n = norm(W{i}(j,:));
+%         W{i}(j,idxs) = W{i}(j,idxs) * g(i);
+%     end
+%     
+  
     layers(i).nPre = npre;
     layers(i).nPost = npost;
     layers(i).type = layer_types{i};

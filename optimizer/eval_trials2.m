@@ -49,7 +49,19 @@ end
 assert ( ntrials > 0, 'stopped');
 
 
-ncore_guess = matlabpool('size');
+ver_string = version;
+switch ver_string
+    case '8.3.0.532 (R2014a)'  % The newer incantation.
+        ncore_guess = double(isempty(gcp('nocreate')));
+        if ncore_guess == 0
+            pool = gcp('nocreate');            
+            ncore_guess = pool.NumWorkers;
+        end
+        %disp(['ncore guess:  ', num2str(ncore_guess)]);
+    otherwise        
+        ncore_guess = matlabpool('size'); %#ok<DPOOL>
+end
+
 if ncore_guess == 0
     ncore_guess = 1;
 end
@@ -649,7 +661,6 @@ if 0 && do_return_J_GaussNewton
     avg_gv = avg_gv / ntrials;
 end
 if do_return_preconditioner
-    assert ( false, 'stopped'); % Adding the initial condition code breaks eval_trials for feed forward networks.
     avg_precon = avg_precon / nblocks;  % Note nblocks!!! Not ntrials!!!
 end
 

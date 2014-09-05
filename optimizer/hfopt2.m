@@ -604,7 +604,7 @@ switch lower(net_type)
         eval_objfun_with_network_dn2 = create_eval_objfun_with_network_dn2(weight_cost);
         eval_gradient_dn2 = create_eval_gradient_dn2(weight_cost);
         eval_cg_afun_dn2 = create_eval_cg_afun_dn2(weight_cost);
-        eval_preconditioner_dn2 = create_eval_preconditioner_dn2(weight_cost);
+        eval_preconditioner_dn2 = create_eval_preconditioner_dn2(weight_cost); %#ok<NASGU>
         eval_gradient_with_network_dn2 = create_eval_gradient_with_network_dn2(weight_cost);
         
         
@@ -613,7 +613,8 @@ switch lower(net_type)
         eval_objfun_with_network = create_eval_objfun_with_network2(eval_objfun_with_network_dn2, weight_cost);
         eval_gradient = create_eval_gradient2(eval_gradient_dn2, weight_cost);
         eval_cg_afun = create_eval_cg_afun2(eval_cg_afun_dn2, weight_cost);
-        eval_preconditioner = create_eval_preconditioner2(eval_preconditioner_dn2, weight_cost);
+        %eval_preconditioner = create_eval_preconditioner2(eval_preconditioner_dn2, weight_cost);
+        eval_preconditioner = [];  % de-implementing till I get it 100% -DCS 9/5/2014
         eval_gradient_with_network = create_eval_gradient_with_network2(eval_gradient_with_network_dn2, weight_cost);
 
     case 'test2' % like shock-g said, do whatcha like
@@ -941,42 +942,37 @@ while go
         % Get the subsample for the CG evaluation.
         %forward_pass_s = eval_network(net, v_inputtrain_s, m_targettrain_s, train_vs_valid__train, random_trial_idxs, all_optional_args, 'doparallel', do_parallel_network, 'dowrappers', do_wrappers_network);
         
+        % Sample the input
+        if ( S < T )
+            rp = randperm(T);			% random data
+            random_trial_idxs = rp(1:S);			% S random peices of data
+        else
+            random_trial_idxs = all_train_trial_idxs;
+        end
+        v_inputtrain_s = v_inputtrain_T(:,random_trial_idxs);
+        if ~isempty(m_targettrain_T)
+            m_targettrain_s = m_targettrain_T(:,random_trial_idxs);
+        else
+            m_targettrain_s = [];
+        end
+        
+        
+        % Sample the forward pass
         switch sample_style
             case 'random_rows'
-                if ( S < T )
-                    rp = randperm(T);			% random data
-                    random_trial_idxs = rp(1:S);			% S random peices of data
-                else
-                    random_trial_idxs = all_train_trial_idxs;
+                forward_pass_s = forward_pass_T(random_trial_idxs);  % Now the full pass is guarenteed to be there.
+            case 'random_blocks'  % Changing the meaning.               
+                nfp = length(forward_pass_T);
+                forward_pass_s = cell(size(forward_pass_T));
+                for stuffidx = 1:nfp
+                    forward_pass_s{stuffidx} = forward_pass_T{stuffidx}(:,random_trial_idxs);
                 end
-                v_inputtrain_s = v_inputtrain_T(:,random_trial_idxs);
-                if ~isempty(m_targettrain_T)
-                    m_targettrain_s = m_targettrain_T(:,random_trial_idxs);
-                else
-                    m_targettrain_s = [];
-                end
-
-            case 'random_blocks'
-                if ( S < T )
-                    start_idx = randi(T-S);
-                    stop_idx = start_idx + S - 1;
-                    random_trial_idxs = start_idx:stop_idx;
-                else
-                    random_trial_idxs = all_train_trial_idxs;
-                end
-                v_inputtrain_s = v_inputtrain_T(:,random_trial_idxs);
-                if ~isempty(m_targettrain_T)
-                    m_targettrain_s = m_targettrain_T(:,random_trial_idxs);
-                else
-                    m_targettrain_s = [];
-                end
-                                
             otherwise
                 assert ( false, ['Sample style: ' sample_style ' not supported.']);
         end
     end
     
-    forward_pass_s = forward_pass_T(random_trial_idxs);  % Now the full pass is guarenteed to be there.
+    
     
     if ( ~isempty(eval_preconditioner) )
         package = eval_preconditioner(net, v_inputtrain_s, m_targettrain_s, lambda, TvV_T, random_trial_idxs, all_optional_args, all_simdata, 'doparallel', do_parallel_precon, 'dowrappers', do_wrappers_precon);
